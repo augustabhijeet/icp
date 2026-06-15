@@ -1,0 +1,36 @@
+{
+  "tables": [
+    {
+      "name": "users",
+      "columns": [
+        {"name": "id", "type": "INTEGER", "primary_key": true},
+        {"name": "username", "type": "TEXT", "unique": true, "not_null": true},
+        {"name": "password_hash", "type": "TEXT", "not_null": true},
+        {"name": "created_at", "type": "TIMESTAMP", "default": "CURRENT_TIMESTAMP"}
+      ]
+    },
+    {
+      "name": "documents",
+      "columns": [
+        {"name": "id", "type": "INTEGER", "primary_key": true},
+        {"name": "user_id", "type": "INTEGER", "foreign_key": "users(id)", "not_null": true},
+        {"name": "filename", "type": "TEXT", "not_null": true},
+        {"name": "classification", "type": "TEXT"},
+        {"name": "confidence", "type": "REAL"},
+        {"name": "extracted_data", "type": "JSON"},
+        {"name": "markdown", "type": "TEXT"},
+        {"name": "uploaded_at", "type": "TIMESTAMP", "default": "CURRENT_TIMESTAMP"}
+      ]
+    },
+    {
+      "name": "upload_history",
+      "columns": [
+        {"name": "id", "type": "INTEGER", "primary_key": true},
+        {"name": "user_id", "type": "INTEGER", "foreign_key": "users(id)", "not_null": true},
+        {"name": "document_id", "type": "INTEGER", "foreign_key": "documents(id)", "not_null": true},
+        {"name": "action", "type": "TEXT", "not_null": true},
+        {"name": "timestamp", "type": "TIMESTAMP", "default": "CURRENT_TIMESTAMP"}
+      ]
+    }
+  ]
+}

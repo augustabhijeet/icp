@@ -1,33 +1,55 @@
 import io
 import os
 from collections import defaultdict
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import httpx
 import pdfplumber
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy.orm import Session
+
+# Import DB and AI modules
+try:
+    from . import models, db, ai
+    from .db import engine, get_db
+except ImportError:
+    import models, db, ai
+    from db import engine, get_db
+
+# Initialize database tables
+models.Base.metadata.create_all(bind=engine)
 
 load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 if not OPENROUTER_API_KEY:
     raise RuntimeError("OPENROUTER_API_KEY must be set in .env")
 
-MODEL = "google/gemini-3.1-flash-lite"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".pdf"}
 ALLOWED_CONTENT_TYPES = {"application/pdf"}
-OPENROUTER_URL = os.getenv("OPENROUTER_URL", "https://openrouter.ai/api/v1/chat/completions").strip()
 
 app = FastAPI(title="Intelligent Content Processor API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "OPTIONS", "DELETE"],
     allow_headers=["*"],
 )
+
+
+# Dependency to get current user (Dummy implementation for now)
+async def get_current_user(database: Session = Depends(get_db)):
+    user = database.query(models.User).filter(models.User.username == "user").first()
+    if not user:
+        user = models.User(username="user", password_hash="password") 
+        database.add(user)
+        database.commit()
+        database.refresh(user)
+    return user
 
 
 def normalize_line_key(top: float) -> int:
@@ -66,86 +88,94 @@ def pdf_to_markdown(file_bytes: bytes) -> str:
     return "\n".join(pages)
 
 
-def local_classify_document(markdown: str) -> str:
-    text = markdown.lower()
-    resume_indicators = [
-        "experience",
-        "education",
-        "skills",
-        "work history",
-        "certifications",
-        "resume",
-        "professional experience",
-    ]
-    summary_indicators = [
-        "professional summary",
-        "summary",
-        "objective",
-        "career summary",
-        "about me",
-    ]
-
-    if any(phrase in text for phrase in resume_indicators):
-        return "Resume"
-    if any(phrase in text for phrase in summary_indicators):
-        return "Professional summary"
-    return "Other"
-
-
-async def classify_document(markdown: str) -> str:
-    prompt = (
-        "Classify the document below into exactly one of: Resume, Professional summary, Other. "
-        "Respond with a single label only.\n\n" + markdown
-    )
-
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": MODEL,
-        "messages": [
-            {"role": "system", "content": "You are a document classification assistant."},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.0,
-        "max_tokens": 20,
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(OPENROUTER_URL, json=payload, headers=headers)
-            if response.status_code != 200:
-                print(f"OpenRouter call failed: {response.status_code} {response.text}")
-                return local_classify_document(markdown)
-
-            data = response.json()
-            choice = data.get("choices", [])
-            if not choice or not isinstance(choice, list):
-                print("OpenRouter returned invalid classification response")
-                return local_classify_document(markdown)
-
-            label = choice[0].get("message", {}).get("content", "").strip()
-            normalized = label.splitlines()[0].strip()
-            if normalized not in {"Resume", "Professional summary", "Other"}:
-                return "Other"
-
-            return normalized
-    except httpx.RequestError as exc:
-        print(f"OpenRouter request failed, falling back to local classification: {exc}")
-        return local_classify_document(markdown)
-    except ValueError as exc:
-        print(f"OpenRouter parsing failed, falling back to local classification: {exc}")
-        return local_classify_document(markdown)
-
-
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok"}
 
 
+@app.get("/api/hello")
+async def hello():
+    return {"message": "Hello World"}
+
+
+@app.post("/api/ai/test")
+async def test_ai():
+    try:
+        response = await ai.call_llm("What is 2+2?")
+        return {"response": response, "status": "success"}
+    except Exception as e:
+        return {"error": str(e), "status": "failed"}
+
+
+@app.post("/api/auth/login")
+async def login(login_data: Dict[str, str], database: Session = Depends(get_db)):
+    username = login_data.get("username")
+    password = login_data.get("password")
+    
+    if username == "user" and password == "password":
+        user = database.query(models.User).filter(models.User.username == username).first()
+        if not user:
+            user = models.User(username=username, password_hash=password)
+            database.add(user)
+            database.commit()
+        return {"status": "success", "username": username, "token": "dummy-token"}
+    
+    raise HTTPException(status_code=401, detail="Invalid credentials")
+
+
+@app.get("/api/documents")
+async def list_documents(
+    current_user: models.User = Depends(get_current_user),
+    database: Session = Depends(get_db)
+):
+    docs = database.query(models.Document).filter(
+        models.Document.user_id == current_user.id
+    ).order_by(models.Document.uploaded_at.desc()).all()
+    
+    return [
+        {
+            "id": d.id,
+            "filename": d.filename,
+            "classification": d.classification,
+            "confidence": d.confidence,
+            "uploaded_at": d.uploaded_at
+        }
+        for d in docs
+    ]
+
+
+@app.get("/api/documents/{doc_id}")
+async def get_document(
+    doc_id: int,
+    current_user: models.User = Depends(get_current_user),
+    database: Session = Depends(get_db)
+):
+    doc = database.query(models.Document).filter(
+        models.Document.id == doc_id,
+        models.Document.user_id == current_user.id
+    ).first()
+    
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+        
+    return {
+        "id": doc.id,
+        "filename": doc.filename,
+        "classification": doc.classification,
+        "confidence": doc.confidence,
+        "markdown": doc.markdown,
+        "extracted_data": doc.extracted_data,
+        "uploaded_at": doc.uploaded_at
+    }
+
+
 @app.post("/api/upload")
-async def upload_document(file: UploadFile = File(...)):
+@app.post("/api/documents")
+async def upload_document(
+    file: UploadFile = File(...),
+    current_user: models.User = Depends(get_current_user),
+    database: Session = Depends(get_db)
+):
     filename = file.filename or "document.pdf"
     extension = os.path.splitext(filename)[1].lower()
     if extension not in ALLOWED_EXTENSIONS or file.content_type not in ALLOWED_CONTENT_TYPES:
@@ -160,9 +190,66 @@ async def upload_document(file: UploadFile = File(...)):
     except Exception as exc:
         raise HTTPException(500, f"PDF parsing failed: {exc}")
 
-    classification = await classify_document(markdown)
+    # AI Classification
+    ai_result = await ai.classify_document_ai(markdown)
+    classification = ai_result.get("classification", "Other")
+    confidence = ai_result.get("confidence", 0.0)
+    
+    # AI Extraction
+    extracted_data = await ai.extract_content_ai(markdown, classification)
+    
+    # Store in DB
+    new_doc = models.Document(
+        user_id=current_user.id,
+        filename=filename,
+        classification=classification,
+        confidence=confidence,
+        markdown=markdown,
+        extracted_data=extracted_data
+    )
+    database.add(new_doc)
+    database.commit()
+    database.refresh(new_doc)
+    
+    # Add to history
+    history_entry = models.UploadHistory(
+        user_id=current_user.id,
+        document_id=new_doc.id,
+        action="UPLOAD"
+    )
+    database.add(history_entry)
+    database.commit()
+
     return {
-        "filename": filename,
-        "classification": classification,
-        "markdown": markdown,
+        "id": new_doc.id,
+        "filename": new_doc.filename,
+        "classification": new_doc.classification,
+        "markdown": new_doc.markdown,
+        "confidence": new_doc.confidence,
+        "extracted_data": new_doc.extracted_data
     }
+
+
+@app.delete("/api/documents/{doc_id}")
+async def delete_document(
+    doc_id: int,
+    current_user: models.User = Depends(get_current_user),
+    database: Session = Depends(get_db)
+):
+    doc = database.query(models.Document).filter(
+        models.Document.id == doc_id,
+        models.Document.user_id == current_user.id
+    ).first()
+    
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+        
+    database.delete(doc)
+    database.commit()
+    
+    return {"message": "Document deleted successfully"}
+
+
+# Mount static files for frontend
+if os.path.exists("frontend/dist"):
+    app.mount("/", StaticFiles(directory="frontend/dist", html=True), name="static")
