@@ -5,6 +5,9 @@ from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
+# Fallback for when running from within the backend directory
+if not os.getenv("OPENROUTER_MODEL"):
+    load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 MODEL = os.getenv("OPENROUTER_MODEL")

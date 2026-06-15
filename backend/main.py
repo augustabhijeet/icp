@@ -23,6 +23,10 @@ except ImportError:
 models.Base.metadata.create_all(bind=engine)
 
 load_dotenv()
+# Fallback for when running from within the backend directory
+if not os.getenv("OPENROUTER_API_KEY"):
+    load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 if not OPENROUTER_API_KEY:
     raise RuntimeError("OPENROUTER_API_KEY must be set in .env")
