@@ -7,7 +7,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-MODEL = os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free")
+MODEL = os.getenv("OPENROUTER_MODEL")
+if not MODEL:
+    raise RuntimeError("OPENROUTER_MODEL must be set in .env")
 OPENROUTER_URL = os.getenv("OPENROUTER_URL", "https://openrouter.ai/api/v1/chat/completions").strip()
 
 def clean_json_response(content: str) -> str:

@@ -34,4 +34,4 @@ Then open the Vite URL printed in the terminal.
 
 - The backend proxies CORS for the frontend during development.
 - The `.env` file must contain `OPENROUTER_API_KEY`.
-- This implementation uses the OpenRouter model `google/gemma-4-31b-it:free` for classification.
+- The implementation picks the model name dynamically from the `OPENROUTER_MODEL` environment variable in the `.env` file.
